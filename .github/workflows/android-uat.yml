@@ -97,14 +97,17 @@ jobs:
           set -euo pipefail
           BUILD_NAME="0.1.${RUN_NUMBER}"
           flutter pub get
-          flutter build apk --flavor uat --release \
-            --build-name="$BUILD_NAME" --build-number="$RUN_NUMBER" \
-            --dart-define=SCHOOL_ERP_UAT=true \
-            --dart-define=FIREBASE_API_KEY="$FIREBASE_API_KEY" \
-            --dart-define=FIREBASE_APP_ID="$FIREBASE_APP_ID" \
-            --dart-define=FIREBASE_MESSAGING_SENDER_ID="$FIREBASE_MESSAGING_SENDER_ID" \
-            --dart-define=FIREBASE_PROJECT_ID="$FIREBASE_PROJECT_ID" \
-            --dart-define=GOOGLE_SERVER_CLIENT_ID="$GOOGLE_SERVER_CLIENT_ID"
+          build_args=(
+            "--build-name=$BUILD_NAME"
+            "--build-number=$RUN_NUMBER"
+            --dart-define=SCHOOL_ERP_UAT=true
+            "--dart-define=FIREBASE_API_KEY=$FIREBASE_API_KEY"
+            "--dart-define=FIREBASE_APP_ID=$FIREBASE_APP_ID"
+            "--dart-define=FIREBASE_MESSAGING_SENDER_ID=$FIREBASE_MESSAGING_SENDER_ID"
+            "--dart-define=FIREBASE_PROJECT_ID=$FIREBASE_PROJECT_ID"
+            "--dart-define=GOOGLE_SERVER_CLIENT_ID=$GOOGLE_SERVER_CLIENT_ID"
+          )
+          flutter build apk --flavor uat --release "${build_args[@]}"
           mkdir -p artifacts/android
           cp build/app/outputs/flutter-apk/app-uat-release.apk "artifacts/android/School-ERP-Teacher-${BUILD_NAME}.apk"
       - uses: actions/upload-artifact@v4
