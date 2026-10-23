@@ -109,7 +109,7 @@ jobs:
           )
           flutter build apk --flavor uat --release "${build_args[@]}"
           mkdir -p artifacts/android
-          cp build/app/outputs/flutter-apk/app-uat-release.apk "artifacts/android/School-ERP-Teacher-${BUILD_NAME}.apk"
+          cp build/app/outputs/flutter-apk/app-uat-release.apk "artifacts/android/teacher_app_v${BUILD_NAME}.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: school-erp-teacher-android-uat-${{ github.run_number }}
@@ -129,6 +129,6 @@ jobs:
           FIREBASE_TESTER_EMAILS: ${{ vars.FIREBASE_TESTER_EMAILS }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          firebase appdistribution:distribute "artifacts/android/School-ERP-Teacher-0.1.${RUN_NUMBER}.apk" \
+          firebase appdistribution:distribute "artifacts/android/teacher_app_v0.1.${RUN_NUMBER}.apk" \
             --app "$FIREBASE_APP_ID" --testers "$FIREBASE_TESTER_EMAILS" \
             --release-notes "Automated UAT build ${RUN_NUMBER} from commit ${GITHUB_SHA}"
