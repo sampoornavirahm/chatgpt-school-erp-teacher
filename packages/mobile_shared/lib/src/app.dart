@@ -2007,9 +2007,9 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       widget.role == MobileRole.teacher
           ? const [
             'Overview',
+            'Classes',
             'Attendance',
-            'Homework',
-            'Draft marks',
+            'Work',
             'Notices',
           ]
           : const ['Children', 'Learning', 'Fees', 'Notices', 'Requests'];
@@ -2036,12 +2036,12 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
   List<Widget> _activeWorkflow() {
     if (widget.role == MobileRole.teacher) {
       switch (_activeTab) {
+        case 'Classes':
+          return _teacherClasses();
         case 'Attendance':
           return _teacherAttendance();
-        case 'Homework':
-          return [..._homeworkCards(), ..._announcementCards()];
-        case 'Draft marks':
-          return _teacherMarkCards();
+        case 'Work':
+          return [..._homeworkCards(), ..._teacherMarkCards()];
         case 'Notices':
           return _announcementCards(allowAcknowledge: true);
         default:
@@ -2069,6 +2069,19 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     'Requests' => 4,
     _ => 0,
   };
+
+  int get _teacherNavigationIndex => switch (_activeTab) {
+    'Classes' => 1,
+    'Attendance' => 2,
+    'Work' => 3,
+    'Notices' => 4,
+    _ => 0,
+  };
+
+  void _selectTeacherNavigation(int index) {
+    const tabs = ['Overview', 'Classes', 'Attendance', 'Work', 'Notices'];
+    setState(() => _activeTab = tabs[index]);
+  }
 
   void _selectParentNavigation(int index) {
     const tabs = ['Children', 'Learning', 'Notices', 'Fees', 'Requests'];
@@ -2116,6 +2129,57 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                 'Day ${row['weekday'] ?? '—'} · Period ${row['period'] ?? '—'}',
           ),
         ),
+  ];
+
+  List<Widget> _teacherClasses() => [
+    _sectionHeading('My assigned classes'),
+    if (_sections.isEmpty)
+      const _InfoBanner(
+        text:
+            'No assigned classes are available. Sync with the school Hub or ask the school administrator to check your teaching assignments.',
+      ),
+    ..._sections.map((section) {
+      final sectionId = section['public_id']?.toString();
+      final selected = sectionId == _selectedSection;
+      final students = _students
+          .where((student) => student['section_public_id'] == sectionId)
+          .toList();
+      return Card(
+        child: ListTile(
+          leading: CircleAvatar(
+            child: Icon(selected ? Icons.groups : Icons.groups_outlined),
+          ),
+          title: Text('${section['class_name']} · ${section['name']}'),
+          subtitle: Text(
+            selected
+                ? '${students.length} students available on this device'
+                : 'Tap to load this assigned roster',
+          ),
+          trailing:
+              selected
+                  ? const Icon(Icons.check_circle_outline)
+                  : const Icon(Icons.chevron_right),
+          onTap: () async {
+            setState(() => _selectedSection = sectionId);
+            await _reloadLocal();
+          },
+        ),
+      );
+    }),
+    if (_selectedSection != null && _students.isNotEmpty) ...[
+      _sectionHeading('Class roster'),
+      ..._students.map(
+        (student) => Card(
+          child: ListTile(
+            leading: const Icon(Icons.person_outline),
+            title: Text(student['full_name']?.toString() ?? 'Student'),
+            subtitle: Text(
+              'Admission no. ${student['admission_no'] ?? 'not available'}',
+            ),
+          ),
+        ),
+      ),
+    ],
   ];
 
   List<Widget> _homeworkCards({int limit = 100}) => [
@@ -2862,7 +2926,7 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
             ),
           if (widget.role == MobileRole.parent && _students.length > 1)
             const SizedBox(height: 10),
-          if (widget.role == MobileRole.teacher) ..._workflowTabs(),
+          if (widget.role != MobileRole.teacher) ..._workflowTabs(),
           const SizedBox(height: 12),
           ..._activeWorkflow(),
           const SizedBox(height: 10),
@@ -2900,6 +2964,37 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
         ],
       ),
     );
+    if (widget.role == MobileRole.teacher) {
+      return Scaffold(
+        body: page,
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _teacherNavigationIndex,
+          onDestinationSelected: _selectTeacherNavigation,
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.home_outlined),
+              label: 'Home',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.groups_outlined),
+              label: 'Classes',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.fact_check_outlined),
+              label: 'Attendance',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.menu_book_outlined),
+              label: 'Work',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.campaign_outlined),
+              label: 'Notices',
+            ),
+          ],
+        ),
+      );
+    }
     if (widget.role != MobileRole.parent) return page;
     return Scaffold(
       body: page,
