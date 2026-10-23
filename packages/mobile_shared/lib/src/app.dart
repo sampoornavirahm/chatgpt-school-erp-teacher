@@ -2261,8 +2261,11 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
           title: Text(row['title']?.toString() ?? 'Notice'),
           subtitle: Text(
             '${row['publishOn'] ?? ''} · ${row['className'] ?? 'Whole school'}\n${row['body'] ?? ''}',
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
           ),
           isThreeLine: true,
+          onTap: () => _showAnnouncementDetails(row),
           trailing:
               canAcknowledge && !acknowledged
                   ? IconButton(
@@ -2292,6 +2295,34 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       );
     }),
   ];
+
+  Future<void> _showAnnouncementDetails(Map<String, dynamic> row) async {
+    await showDialog<void>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: Text(row['title']?.toString() ?? 'School notice'),
+            content: SingleChildScrollView(
+              child: Text(
+                [
+                  if (row['publishOn']?.toString().trim().isNotEmpty == true)
+                    'Published ${row['publishOn']}',
+                  if (row['className']?.toString().trim().isNotEmpty == true)
+                    'For ${row['className']}',
+                  if (row['body']?.toString().trim().isNotEmpty == true)
+                    row['body'].toString().trim(),
+                ].join('\n\n'),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+    );
+  }
 
   List<Widget> _parentLearning() => [
     _sectionHeading('Attendance, homework and results'),
