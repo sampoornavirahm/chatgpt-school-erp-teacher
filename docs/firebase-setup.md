@@ -1,24 +1,21 @@
 # Firebase setup and operations
 
-Firebase is optional. The local Hub and app inboxes must continue working if Firebase is absent or unreachable. Current app configuration files are placeholders; the labels `testproject1` and `testapp1` supplied by the owner are display names, not verified Firebase project/app IDs. The project IDs, Android registrations, service-account access and generated app configuration still need to be connected.
+Firebase is optional. The local Hub and app inboxes must continue working if Firebase is absent or unreachable. The Firebase Android registrations are supplied to release builds through the `uat` GitHub environment.
 
 ## Connect the mobile apps
 
-1. Sign in to the Firebase account that owns the project. Confirm its actual project ID in Project settings; do not use its display name as the ID.
-2. Register separate Android apps for Teachers and Parents using each app's Android application ID. Keep Android registration and credentials distinct by app. iOS setup is intentionally not part of this phase.
-3. From each app directory, run FlutterFire configuration for Android and select the real project. For example:
+1. In Firebase Console, confirm the project ID and register separate Android apps using `com.iqnaut.parents_app` and `com.iqnaut.teachers_app`.
+2. In the `uat` GitHub environment, set `FIREBASE_PROJECT_ID`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_PARENTS_APP_ID`, `FIREBASE_TEACHERS_APP_ID`, and `GOOGLE_SERVER_CLIENT_ID` as variables. Keep `FIREBASE_API_KEY` and the Firebase service-account JSON in secrets.
+3. The Android workflows generate a temporary `google-services.json` from those values, apply the Crashlytics and Performance Monitoring Gradle plugins, build the signed APKs, run Firebase Test Lab Robo smoke tests, then distribute passing builds. The generated native configuration is ignored by Git and is not committed.
+4. In Firebase Console, enable Analytics, Crashlytics, Performance Monitoring, Remote Config, Cloud Messaging and In-App Messaging for the project. The app collects analytics, crash reports and performance timings only after the user opts in. Push permission remains a separate choice.
+5. Configure the backend's Firebase service account separately if the PHP service needs to send push notifications.
 
-   ```sh
-   cd Teachers
-   flutterfire configure --project <firebase-project-id> --platforms android
-   cd ../Parents
-   flutterfire configure --project <firebase-project-id> --platforms android
-   ```
+## Firebase Test Lab in CI
 
-   The command replaces each app's placeholder `firebase_options.dart` and adds native Android Firebase configuration. Do not commit service-account JSON or OAuth client secrets. The Firebase client API key is public app configuration; do not use it as a server secret.
-
-4. In Firebase Console, enable Analytics, Cloud Messaging, Crashlytics, Performance Monitoring, Remote Config, In-App Messaging and A/B Testing as needed. Set Android Crashlytics/Performance Gradle plugin requirements if FlutterFire asks for them and build a fresh debug APK to verify initialization.
-5. In each mobile app, opt in to diagnostics/analytics when prompted. Push permission is requested separately when the user selects **Enable notifications**. To send server notifications, separately configure the PHP service account in the backend.
+- Each main-branch UAT build runs one two-minute Robo test on `MediumPhone.arm` / Android 35 for the relevant app. This checks installation, launch and basic screen traversal; it does not sign in or replace manual UAT of school workflows.
+- The CI service account needs the Google Cloud project **Editor** role to use Test Lab's default results bucket from `gcloud`. Firebase App Distribution Admin alone is insufficient. This is a broad project role; use a dedicated CI service account and do not reuse a server/runtime identity.
+- Test Lab's Spark quota is up to 10 virtual-device test runs and 60 virtual-device test minutes per project per day. If both app repositories release on the same day, they use two of those runs. Keep the project on Spark; do not attach a billing account.
+- Firebase Test Lab is scheduled to shut down on September 30, 2027. Its announced replacement, Google Cloud Developer Device Platform, requires billing, so reassess this test path before that date if Spark-only remains a requirement.
 
 If Firebase CLI cannot list the project, sign in again with the project-owning Google account, confirm the project membership in Firebase Console, then run `firebase projects:list` and repeat FlutterFire configuration. Do not deploy a template until the project and target setting have been reviewed in Console.
 
@@ -26,17 +23,17 @@ If Firebase CLI cannot list the project, sign in again with the project-owning G
 
 - **Analytics:** collection is disabled until explicit in-app consent. The app records a generic app-open event without student or account details.
 - **Crashlytics:** consent-gated for uncaught error reporting.
-- **Performance Monitoring:** consent-gated generic API traces; no student data is attached.
-- **Remote Config/A/B Testing:** the `show_welcome_card` boolean changes a home-screen presentation detail only. It cannot change access, license or permission rules. A/B experiments require Analytics consent and must only vary this low-risk presentation setting.
+- **Performance Monitoring:** consent-gated startup/network monitoring and generic API traces; no student data is intentionally attached.
+- **Remote Config/A/B Testing:** the `show_welcome_card` boolean changes a home-screen presentation detail only. Fetching uses a 12-hour release interval and shipped defaults when unavailable. It cannot change access, license or permission rules. A/B experiments require Analytics consent and must only vary this low-risk presentation setting.
 - **In-App Messaging:** consent-gated `mobile_home_opened` event; campaigns are authored in Firebase Console.
 - **FCM:** users explicitly grant device notification permission. Server payloads contain a generic title/body and a small event type; detailed notice text is fetched from the signed-in app. The in-app Notices page remains the fallback.
-- **App Distribution:** an operator release step for signed builds; it is not an app runtime feature. Release signing is not configured yet, so only local debug APKs are available.
+- **App Distribution:** the UAT GitHub workflow publishes signed APKs after its Test Lab Robo smoke test passes. Production signing/release remains a separate step.
 
 The PHP service must also be configured with `FIREBASE_PROJECT_ID` and a service-account JSON path outside `Backend/public`. See the [backend hosting guide](backend-hosting.md). A Firebase client setup alone does not enable server push.
 
 ## Usage, quotas and cost controls
 
-The product policy is Firebase Spark/free services only. Do not attach a billing account or upgrade to Blaze for Phase 9. Firebase's current pricing pages list Analytics, Cloud Messaging, Crashlytics, In-App Messaging, App Distribution and A/B Testing among no-cost products. Remote Config allows up to 100,000 fetch requests/day on Spark; requests over that threshold are subject to throttling after the applicable grace period. The project's transition period can vary by when Remote Config was enabled, so check the console rather than assuming a grace deadline. Check the official [Firebase pricing plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans) and [Remote Config pricing and quotas](https://firebase.google.com/docs/remote-config/pricing) before changing project settings because quotas and terms can change.
+The product policy is Firebase Spark/free services only. Do not attach a billing account or upgrade to Blaze. Firebase lists Analytics, Cloud Messaging, Crashlytics, In-App Messaging and App Distribution among no-cost products. Remote Config currently includes 100,000 fetch requests per project per day at no cost; stay below that limit. Test Lab's Spark quota is 10 virtual runs and 60 virtual-device test minutes per project per day. Check the official [Firebase pricing plans](https://firebase.google.com/docs/projects/billing/firebase-pricing-plans), [Remote Config pricing and quotas](https://firebase.google.com/docs/remote-config/pricing) and [Test Lab quotas](https://firebase.google.com/docs/test-lab/usage-quotas-pricing) before changing project settings because quotas and terms can change.
 
 At least once a month, and before any campaign or experiment:
 
@@ -69,3 +66,4 @@ Firebase publishes usage in its console; the school desktop/operator portal does
 - **No push received:** use the generic connection test from the school admin screen, verify the device opted in and that a parent is linked to the projected student, then check server logs without recording credentials or notification content.
 - **Remote Config unavailable:** the app uses the built-in default and school records remain usable.
 - **App Distribution unavailable:** build/sign the release artifact and register the app first; do not distribute the debug APK as a production release.
+- **Test Lab returns 403:** verify the service account belongs to the correct Firebase project and has the required project Editor access for the default results bucket.

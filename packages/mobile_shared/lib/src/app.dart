@@ -3465,7 +3465,9 @@ class _LoginViewState extends State<_LoginView> {
       ],
     ),
     footer: Text(
-      'Analytics and crash diagnostics are ${widget.consent ? 'enabled by your choice' : 'off'}. Firebase setup ${widget.firebaseReady ? 'is ready' : 'is pending'}.',
+      'Analytics, crash reporting, and performance monitoring are '
+      '${widget.consent ? 'enabled by your choice' : 'off'}. Firebase setup '
+      '${widget.firebaseReady ? 'is ready' : 'is pending'}.',
       textAlign: TextAlign.center,
       style: const TextStyle(color: Color(0xff758196), fontSize: 11.5),
     ),
@@ -4240,11 +4242,13 @@ class _ConsentRow extends StatelessWidget {
     value: value,
     onChanged: onChanged,
     title: const Text(
-      'Share analytics and crash diagnostics',
+      'Share app diagnostics and usage analytics',
       style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
     ),
     subtitle: const Text(
-      'Optional. Student names, records and messages are never sent as analytics.',
+      'Optional. Shares basic usage events, crash reports and performance '
+      'timings with Firebase. Student names, records and message contents are '
+      'not attached.',
       style: TextStyle(fontSize: 11.5),
     ),
   );

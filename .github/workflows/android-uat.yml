@@ -82,6 +82,15 @@ jobs:
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/school-erp-uat.jks"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/school-erp-uat.jks" >> "$GITHUB_ENV"
+      - name: Generate Android Firebase build configuration
+        env:
+          ANDROID_APPLICATION_ID: com.iqnaut.teachers_app
+          FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+          FIREBASE_APP_ID: ${{ vars.FIREBASE_TEACHERS_APP_ID }}
+          GOOGLE_SERVER_CLIENT_ID: ${{ vars.GOOGLE_SERVER_CLIENT_ID }}
+        run: node scripts/write-google-services-json.mjs
       - name: Build signed Teacher APK
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -116,13 +125,27 @@ jobs:
           path: artifacts/android/*.apk
           if-no-files-found: error
           retention-days: 14
-      - name: Configure Firebase CLI credentials
+      - uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          project_id: ${{ vars.FIREBASE_PROJECT_ID }}
+      - uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ vars.FIREBASE_PROJECT_ID }}
+      - name: Run Firebase Test Lab Robo smoke test
         env:
-          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> "$GITHUB_ENV"
-          npm install --global firebase-tools
+          gcloud firebase test android run \
+            --project "$FIREBASE_PROJECT_ID" \
+            --type robo \
+            --app "artifacts/android/teacher_app_v0.1.${RUN_NUMBER}.apk" \
+            --device model=MediumPhone.arm,version=35,locale=en,orientation=portrait \
+            --timeout 120s \
+            --client-details matrixLabel="teacher-uat-${RUN_NUMBER}"
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools
       - name: Distribute to UAT testers
         env:
           FIREBASE_APP_ID: ${{ vars.FIREBASE_TEACHERS_APP_ID }}
