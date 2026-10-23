@@ -27,14 +27,26 @@ Future<void> launchSchoolErpApp({
   required FirebaseOptions firebaseOptions,
 }) async {
   WidgetsFlutterBinding.ensureInitialized();
-  final firebaseReady = await FirebaseServices.initialize(firebaseOptions);
-  if (firebaseReady && _uatDistributionEnabled && Platform.isAndroid) {
-    unawaited(_checkUatDistributionUpdate());
-  }
-  if (firebaseReady) {
-    FirebaseMessaging.onBackgroundMessage(schoolErpFcmBackgroundHandler);
-  }
   runApp(SchoolErpMobile(role: role));
+  unawaited(_initializeOptionalFirebase(firebaseOptions));
+}
+
+Future<void> _initializeOptionalFirebase(FirebaseOptions options) async {
+  try {
+    final firebaseReady = await FirebaseServices.initialize(options);
+    if (!firebaseReady) return;
+
+    FirebaseMessaging.onBackgroundMessage(schoolErpFcmBackgroundHandler);
+    final preferences = await SharedPreferences.getInstance();
+    await FirebaseServices.setAnalyticsConsent(
+      preferences.getBool('school_erp_analytics_consent') ?? false,
+    );
+    if (_uatDistributionEnabled && Platform.isAndroid) {
+      unawaited(_checkUatDistributionUpdate());
+    }
+  } catch (_) {
+    // Firebase services are optional; they must not block app startup.
+  }
 }
 
 Future<void> _checkUatDistributionUpdate() async {
@@ -136,6 +148,20 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
   }
 
   Future<void> _bootstrap({bool skipBiometric = false}) async {
+    try {
+      await _bootstrapState(skipBiometric: skipBiometric);
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error =
+              'Could not finish startup. Check your connection and try again.';
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _bootstrapState({bool skipBiometric = false}) async {
     final preferences = await SharedPreferences.getInstance();
     final savedUrl = preferences.getString(_apiUrlKey);
     _hubMode = preferences.getBool(_hubModeKey) ?? false;
