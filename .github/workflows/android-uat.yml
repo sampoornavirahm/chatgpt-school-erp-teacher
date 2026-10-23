@@ -40,7 +40,7 @@ jobs:
   distribute:
     name: Build and distribute signed UAT APK
     needs: validate
-    if: github.event_name != 'pull_request' && vars.FIREBASE_PROJECT_ID != ''
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: uat
     steps:
