@@ -719,7 +719,8 @@ class OfflineSyncStore {
         final record = Map<String, dynamic>.from(result['record'] as Map);
         batch.insert('mobile_records', {
           'entity_type': 'attendanceDrafts',
-          'entity_id': record['id']?.toString() ??
+          'entity_id':
+              record['id']?.toString() ??
               '${record['studentPublicId']}:${record['date']}:${record['period'] ?? 0}',
           'payload_json': jsonEncode(record),
           'updated_at': DateTime.now().toUtc().toIso8601String(),

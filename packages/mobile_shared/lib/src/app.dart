@@ -2255,14 +2255,16 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     final sectionPublicId = _selectedSection;
     if (store == null || sectionPublicId == null) return;
     final queuedIds = _queuedAttendanceStudentIds();
-    final marked = _students.where((student) {
-      final id = student['public_id']?.toString() ?? '';
-      return _localAttendance(id) != null || queuedIds.contains(id);
-    }).length;
+    final marked =
+        _students.where((student) {
+          final id = student['public_id']?.toString() ?? '';
+          return _localAttendance(id) != null || queuedIds.contains(id);
+        }).length;
     if (_students.isEmpty || marked != _students.length) {
       setState(
-        () => _message =
-            'Mark all ${_students.length} students before submitting attendance.',
+        () =>
+            _message =
+                'Mark all ${_students.length} students before submitting attendance.',
       );
       return;
     }
@@ -2284,8 +2286,9 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     );
     if (mounted) {
       setState(
-        () => _message =
-            'Attendance is queued for school review. It will sync when the Hub is reachable.',
+        () =>
+            _message =
+                'Attendance is queued for school review. It will sync when the Hub is reachable.',
       );
     }
     await _reloadLocal();
@@ -3901,11 +3904,13 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
           ),
         if (sessionStatus == 'submitted')
           const _InfoBanner(
-            text: 'Attendance was submitted and is waiting for school approval.',
+            text:
+                'Attendance was submitted and is waiting for school approval.',
           ),
         if (sessionStatus == 'approved')
           const _InfoBanner(
-            text: 'This attendance session has been approved and shared with parents.',
+            text:
+                'This attendance session has been approved and shared with parents.',
           ),
         if (sessionStatus == 'needs_changes')
           _InfoBanner(
@@ -3914,7 +3919,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
           ),
         if (session?['status'] == 'draft')
           const _InfoBanner(
-            text: 'Draft marks are saved on the School Hub and are not visible to parents.',
+            text:
+                'Draft marks are saved on the School Hub and are not visible to parents.',
           ),
         if (markedCount == _students.length &&
             sessionStatus != 'submitted' &&
@@ -4008,16 +4014,20 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                             ),
                           )
                           .toList(),
-                  onChanged: sessionLocked ? null : (value) {
-                    if (value != null)
-                      setState(() => _draftStatuses[draftKey] = value);
-                  },
+                  onChanged:
+                      sessionLocked
+                          ? null
+                          : (value) {
+                            if (value != null)
+                              setState(() => _draftStatuses[draftKey] = value);
+                          },
                 ),
                 IconButton(
                   tooltip: 'Save draft on this device',
-                  onPressed: _busy || sessionLocked
-                      ? null
-                      : () => unawaited(_queueAttendance(student)),
+                  onPressed:
+                      _busy || sessionLocked
+                          ? null
+                          : () => unawaited(_queueAttendance(student)),
                   icon: const Icon(Icons.save_outlined),
                 ),
               ],
