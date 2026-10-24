@@ -9,11 +9,14 @@ import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:school_erp_mobile_shared/src/api_client.dart';
+import 'package:school_erp_mobile_shared/src/calendar_event_presentation.dart';
 import 'package:school_erp_mobile_shared/src/firebase_services.dart';
+import 'package:school_erp_mobile_shared/src/meeting_link.dart';
 import 'package:school_erp_mobile_shared/src/parent_biometric_service.dart';
 import 'package:school_erp_mobile_shared/src/offline_sync_store.dart';
 import 'package:school_erp_mobile_shared/src/parent_request_dates.dart';
 import 'package:school_erp_mobile_shared/src/offline_sync_service.dart';
+import 'package:school_erp_mobile_shared/src/timetable_projection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -100,7 +103,12 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
   static bool _googleSignInInitialized = false;
   final _api = ApiClient();
   StreamSubscription<RemoteMessage>? _messageSubscription;
+  StreamSubscription<RemoteMessage>? _messageOpenedSubscription;
   StreamSubscription<String>? _tokenSubscription;
+  bool _initialMessageChecked = false;
+  int _notificationRevision = 0;
+  String? _notificationType;
+  bool _notificationOpened = false;
   bool _loading = true;
   bool _working = false;
   bool _signedIn = false;
@@ -143,6 +151,7 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _messageSubscription?.cancel();
+    _messageOpenedSubscription?.cancel();
     _tokenSubscription?.cancel();
     super.dispose();
   }
@@ -1145,15 +1154,78 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
   }
 
   void _startMessagingListeners() {
-    _messageSubscription ??= FirebaseMessaging.onMessage.listen((_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You have a new school update.')),
-      );
-    });
+    _messageSubscription ??= FirebaseMessaging.onMessage.listen(
+      (message) => unawaited(_handleSchoolNotification(message, opened: false)),
+    );
+    _messageOpenedSubscription ??= FirebaseMessaging.onMessageOpenedApp.listen(
+      (message) => unawaited(_handleSchoolNotification(message, opened: true)),
+    );
+    if (!_initialMessageChecked) {
+      _initialMessageChecked = true;
+      unawaited(_handleInitialSchoolNotification());
+    }
     _tokenSubscription ??= FirebaseMessaging.instance.onRegistered.listen(
       _registerFcmInstallation,
     );
+  }
+
+  Future<void> _handleInitialSchoolNotification() async {
+    try {
+      final message = await FirebaseMessaging.instance.getInitialMessage();
+      if (message != null) {
+        await _handleSchoolNotification(message, opened: true);
+      }
+    } catch (_) {
+      // Notifications are optional; a failed launch-message read must not block sign-in.
+    }
+  }
+
+  Future<void> _handleSchoolNotification(
+    RemoteMessage message, {
+    required bool opened,
+  }) async {
+    if (!_signedIn || _user == null) return;
+    final type = message.data['type']?.toString() ?? '';
+    if (mounted) {
+      setState(() {
+        _notificationRevision++;
+        _notificationType = type;
+        _notificationOpened = opened;
+      });
+    }
+    try {
+      if (_hubMode) {
+        // _HubWorkspace observes the revision and syncs the local school Hub.
+      } else {
+        // Teacher learning records are refreshed by the paired Hub workspace.
+        await _api.currentUser();
+      }
+    } on ApiException catch (error) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        await _api.clearToken();
+        if (mounted) {
+          setState(() {
+            _signedIn = false;
+            _user = null;
+            _error = error.message;
+          });
+        }
+        return;
+      }
+    } catch (_) {
+      // Cached school data remains visible when the network is unavailable.
+    }
+    if (!mounted) return;
+    final text = switch (type) {
+      'schedule_update' =>
+        'The school schedule was updated. Open Overview to see the latest timetable.',
+      'homework_update' =>
+        'New homework is available. Open Homework to review the assignment and due date.',
+      'school_notice' => 'A new school notice is available in Notices.',
+      _ =>
+        'You have a new school update. Pull to refresh if details are not current.',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
   Future<void> _registerFcmInstallation(String fid) async {
@@ -1200,8 +1272,10 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
       }
     }
     await _messageSubscription?.cancel();
+    await _messageOpenedSubscription?.cancel();
     await _tokenSubscription?.cancel();
     _messageSubscription = null;
+    _messageOpenedSubscription = null;
     _tokenSubscription = null;
     final preferences = await SharedPreferences.getInstance();
     await preferences.setBool('school_erp_notifications_enabled', false);
@@ -1271,6 +1345,9 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
           onBiometricChanged: _setParentBiometricUnlock,
           onSignOut: _signOut,
           onChangeServer: _changeServer,
+          notificationRevision: _notificationRevision,
+          notificationType: _notificationType,
+          notificationOpened: _notificationOpened,
         );
       }
       return _HubLoginView(
@@ -1732,6 +1809,9 @@ class _HubWorkspace extends StatefulWidget {
     required this.onBiometricChanged,
     required this.onSignOut,
     required this.onChangeServer,
+    required this.notificationRevision,
+    required this.notificationType,
+    required this.notificationOpened,
   });
 
   final MobileRole role;
@@ -1744,6 +1824,9 @@ class _HubWorkspace extends StatefulWidget {
   final ValueChanged<bool> onBiometricChanged;
   final VoidCallback onSignOut;
   final VoidCallback onChangeServer;
+  final int notificationRevision;
+  final String? notificationType;
+  final bool notificationOpened;
 
   @override
   State<_HubWorkspace> createState() => _HubWorkspaceState();
@@ -1753,33 +1836,46 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
   OfflineSyncStore? _store;
   OfflineSyncService? _syncService;
   List<Map<String, dynamic>> _timetable = [];
+  String? _timetableLastUpdatedAt;
+  List<Map<String, dynamic>> _schoolCalendar = [];
+  List<Map<String, dynamic>> _teacherSubstitutions = [];
   List<Map<String, dynamic>> _homework = [];
   List<Map<String, dynamic>> _announcements = [];
   List<Map<String, dynamic>> _examMarks = [];
   List<Map<String, dynamic>> _feeInvoices = [];
   List<Map<String, dynamic>> _feePayments = [];
   List<Map<String, dynamic>> _parentRequests = [];
+  List<Map<String, dynamic>> _staffLeaveRequests = [];
   List<Map<String, Object?>> _queuedCommands = [];
   List<Map<String, Object?>> _sections = [];
   List<Map<String, Object?>> _students = [];
   List<Map<String, Object?>> _attendance = [];
+  List<Map<String, Object?>> _queuedAttendance = [];
+  List<Map<String, dynamic>> _attendanceDrafts = [];
+  List<Map<String, dynamic>> _attendanceSessions = [];
+  List<Map<String, dynamic>> _attendanceStatuses = [];
   Map<String, int> _counts = {};
   final Map<String, String> _draftStatuses = {};
   final _dateController = TextEditingController();
   String? _selectedSection;
+  int _attendancePeriod = 0;
   String? _selectedParentStudentId;
   String _activeTab = '';
   late String _date;
+  bool _showWeeklyTimetable = false;
   bool _loading = true;
   bool _busy = false;
   bool _offline = false;
   String? _message;
   Timer? _retryTimer;
+  late int _handledNotificationRevision;
+  bool _notificationSyncPending = false;
 
   @override
   void initState() {
     super.initState();
     _offline = widget.offlineAtLaunch;
+    _handledNotificationRevision = widget.notificationRevision;
     _activeTab = widget.role == MobileRole.teacher ? 'Overview' : 'Children';
     final today = DateTime.now();
     _date =
@@ -1789,6 +1885,31 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     _retryTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       if (mounted && !_busy) unawaited(_syncNow(showMessage: false));
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant _HubWorkspace oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.notificationRevision == _handledNotificationRevision) return;
+    _handledNotificationRevision = widget.notificationRevision;
+    if (widget.notificationOpened) {
+      final targetTab = switch (widget.notificationType) {
+        'schedule_update' =>
+          widget.role == MobileRole.parent ? 'Learning' : 'Overview',
+        'homework_update' =>
+          widget.role == MobileRole.parent ? 'Learning' : 'Homework',
+        'school_notice' => 'Notices',
+        _ => null,
+      };
+      if (targetTab != null && _tabs.contains(targetTab)) {
+        _activeTab = targetTab;
+      }
+    }
+    if (_busy) {
+      _notificationSyncPending = true;
+    } else {
+      unawaited(_syncNow(showMessage: false));
+    }
   }
 
   @override
@@ -1837,42 +1958,65 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
           widget.role == MobileRole.teacher ? _selectedSection : null,
     );
     final marks = await store.attendanceRows();
-    final queuedDrafts = await store.queuedAttendanceDrafts(_date);
+    final queuedDrafts = await store.queuedAttendanceDrafts(
+      _date,
+      period: _attendancePeriod,
+    );
+    final attendanceStatuses = await store.mobileRecords('attendanceStatuses');
+    final attendanceDrafts = await store.mobileRecords('attendanceDrafts');
+    final attendanceSessions = await store.mobileRecords('attendanceSessions');
     final counts = await store.statusCounts();
     final timetable = await store.mobileRecords('timetable');
+    final timetableLastUpdatedAt = await store.mobileRecordsUpdatedAt(
+      'timetable',
+    );
+    final schoolCalendar = await store.mobileRecords('schoolCalendar');
+    final teacherSubstitutions = await store.mobileRecords(
+      'teacherSubstitutions',
+    );
     final homework = await store.mobileRecords('homework');
     final announcements = await store.mobileRecords('announcements');
     final examMarks = await store.mobileRecords('examMarks');
     final feeInvoices = await store.mobileRecords('feeInvoices');
     final feePayments = await store.mobileRecords('feePayments');
     final parentRequests = await store.mobileRecords('parentRequests');
+    final staffLeaveRequests = await store.mobileRecords('staffLeaveRequests');
     final queuedCommands = await store.queuedCommands();
     if (!mounted) return;
     setState(() {
       _sections = sections;
       _students = attendance;
       _attendance = marks;
+      _queuedAttendance = queuedDrafts;
+      _attendanceDrafts = attendanceDrafts;
+      _attendanceSessions = attendanceSessions;
+      _attendanceStatuses = attendanceStatuses;
       _counts = counts;
       _timetable = timetable;
+      _timetableLastUpdatedAt = timetableLastUpdatedAt;
+      _schoolCalendar = schoolCalendar;
+      _teacherSubstitutions = teacherSubstitutions;
       _homework = homework;
       _announcements = announcements;
       _examMarks = examMarks;
       _feeInvoices = feeInvoices;
       _feePayments = feePayments;
       _parentRequests = parentRequests;
+      _staffLeaveRequests = staffLeaveRequests;
       _queuedCommands = queuedCommands;
       for (final student in attendance) {
         final id = student['public_id']?.toString() ?? '';
         Map<String, Object?>? row;
         for (final mark in marks) {
           if (mark['student_public_id'] == id &&
-              mark['attendance_date'] == _date) {
+              mark['attendance_date'] == _date &&
+              (mark['period'] ?? 0) == _attendancePeriod) {
             row = mark;
             break;
           }
         }
         _draftStatuses.putIfAbsent(
-          id,
+          _attendanceDraftKey(id, _attendancePeriod),
           () => row?['status']?.toString() ?? 'present',
         );
       }
@@ -1883,7 +2027,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                   as Map<String, dynamic>;
           final id = payload['studentPublicId']?.toString();
           if (id != null)
-            _draftStatuses[id] = payload['status']?.toString() ?? 'present';
+            _draftStatuses[_attendanceDraftKey(id, _attendancePeriod)] =
+                payload['status']?.toString() ?? 'present';
         } catch (_) {
           // Ignore an unreadable older queue row and keep the last cached value.
         }
@@ -1894,6 +2039,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
   Future<void> _syncNow({bool showMessage = true}) async {
     final service = _syncService;
     if (service == null || _busy) return;
+    final store = _store;
+    final scheduleBefore = await _scheduleSnapshot(store);
     setState(() {
       _busy = true;
       if (showMessage) _message = 'Syncing with the school Hub…';
@@ -1903,6 +2050,11 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       if (problem == null) {
         _offline = false;
         _message = 'Sync complete · ${TimeOfDay.now().format(context)}';
+        final scheduleAfter = await _scheduleSnapshot(store);
+        if (scheduleBefore != scheduleAfter) {
+          _message =
+              'School schedule updated. Check Work for calendar and substitution details.';
+        }
       } else {
         _offline = true;
         if (showMessage)
@@ -1921,8 +2073,27 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
             'Offline changes stay saved on this device and will retry when the Hub is reachable.';
       await _reloadLocal();
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+        if (_notificationSyncPending) {
+          _notificationSyncPending = false;
+          unawaited(_syncNow(showMessage: false));
+        }
+      }
     }
+  }
+
+  Future<String> _scheduleSnapshot(OfflineSyncStore? store) async {
+    if (store == null || widget.role != MobileRole.teacher) return '';
+    final records = <String, List<Map<String, dynamic>>>{};
+    for (final type in [
+      'timetable',
+      'schoolCalendar',
+      'teacherSubstitutions',
+    ]) {
+      records[type] = await store.mobileRecords(type);
+    }
+    return jsonEncode(records);
   }
 
   Future<void> _retryFailed() async {
@@ -1935,8 +2106,14 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     final store = _store;
     if (store == null) return;
     final publicId = student['public_id']?.toString() ?? '';
-    final current = await store.attendance(publicId, _date);
-    final status = _draftStatuses[publicId] ?? 'present';
+    final current = await store.attendance(
+      publicId,
+      _date,
+      period: _attendancePeriod,
+    );
+    final status =
+        _draftStatuses[_attendanceDraftKey(publicId, _attendancePeriod)] ??
+        'present';
     var correctionReason = '';
     if (current != null && current['status'] != status) {
       final reason = await _askCorrectionReason();
@@ -1954,6 +2131,7 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       baseRevision:
           current == null ? null : int.tryParse(current['revision'].toString()),
       correctionReason: correctionReason,
+      period: _attendancePeriod,
     );
     if (mounted)
       setState(
@@ -1962,6 +2140,173 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                 'Attendance saved on this device and added to the sync queue.',
       );
     await _reloadLocal();
+  }
+
+  Future<void> _queueUnmarkedAttendance() async {
+    final store = _store;
+    if (store == null) return;
+    final queuedIds = _queuedAttendanceStudentIds();
+    final unmarked =
+        _students.where((student) {
+          final id = student['public_id']?.toString() ?? '';
+          return id.isNotEmpty &&
+              _localAttendance(id) == null &&
+              !queuedIds.contains(id);
+        }).toList();
+    if (unmarked.isEmpty) {
+      setState(
+        () => _message = 'Every student in this section is already marked.',
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Mark remaining students present?'),
+            content: Text(
+              'This will save present attendance for ${unmarked.length} unmarked students on this device. You can correct a mark later with a reason.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Review list'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Save present marks'),
+              ),
+            ],
+          ),
+    );
+    if (confirmed != true || !mounted) return;
+    final deviceId = await widget.api.deviceId();
+    await store.queueAttendanceBatch(
+      schoolId: widget.schoolId,
+      deviceId: deviceId,
+      userId: widget.user['id'] as int,
+      entries:
+          unmarked
+              .map(
+                (student) => {
+                  'studentPublicId': student['public_id']?.toString() ?? '',
+                  'date': _date,
+                  'period': _attendancePeriod,
+                  'status': 'present',
+                  'reason': '',
+                  'correctionReason': '',
+                  'baseRevision': null,
+                },
+              )
+              .toList(),
+    );
+    setState(
+      () =>
+          _message =
+              '${unmarked.length} present marks saved on this device and queued for the school Hub.',
+    );
+    await _reloadLocal();
+  }
+
+  Future<void> _pickAttendanceDate() async {
+    final selectedDate = DateTime.tryParse(_date) ?? DateTime.now();
+    final date = await showDatePicker(
+      context: context,
+      initialDate:
+          selectedDate.isAfter(DateTime.now()) ? DateTime.now() : selectedDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (date == null || !mounted) return;
+    final value =
+        '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    setState(() {
+      _date = value;
+      _dateController.text = value;
+    });
+    await _reloadLocal();
+  }
+
+  Map<String, dynamic>? get _selectedAttendanceSession {
+    final sectionPublicId = _selectedSection;
+    if (sectionPublicId == null) return null;
+    for (final session in _attendanceSessions) {
+      if (session['sectionPublicId']?.toString() == sectionPublicId &&
+          session['date']?.toString() == _date &&
+          (session['period'] ?? 0) == _attendancePeriod) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  String _attendanceSessionEntityId() =>
+      '${_selectedSection ?? ''}:$_date:$_attendancePeriod';
+
+  bool get _attendanceSubmissionQueued => _queuedCommands.any(
+    (row) =>
+        row['entity_type'] == 'attendance_session' &&
+        row['entity_id'] == _attendanceSessionEntityId() &&
+        row['status'] != 'rejected',
+  );
+
+  Future<void> _submitAttendanceForApproval() async {
+    final store = _store;
+    final sectionPublicId = _selectedSection;
+    if (store == null || sectionPublicId == null) return;
+    final queuedIds = _queuedAttendanceStudentIds();
+    final marked = _students.where((student) {
+      final id = student['public_id']?.toString() ?? '';
+      return _localAttendance(id) != null || queuedIds.contains(id);
+    }).length;
+    if (_students.isEmpty || marked != _students.length) {
+      setState(
+        () => _message =
+            'Mark all ${_students.length} students before submitting attendance.',
+      );
+      return;
+    }
+    final currentStatus = _selectedAttendanceSession?['status']?.toString();
+    if (currentStatus == 'submitted' || _attendanceSubmissionQueued) return;
+    final deviceId = await widget.api.deviceId();
+    await store.queueCommand(
+      schoolId: widget.schoolId,
+      deviceId: deviceId,
+      userId: widget.user['id'] as int,
+      entityType: 'attendance_session',
+      entityId: _attendanceSessionEntityId(),
+      operation: 'attendance.session.submit',
+      payload: {
+        'sectionPublicId': sectionPublicId,
+        'date': _date,
+        'period': _attendancePeriod,
+      },
+    );
+    if (mounted) {
+      setState(
+        () => _message =
+            'Attendance is queued for school review. It will sync when the Hub is reachable.',
+      );
+    }
+    await _reloadLocal();
+    if (!_offline) await _syncNow(showMessage: false);
+  }
+
+  String _attendanceLabel(String value) {
+    for (final status in _attendanceStatuses) {
+      if (status['statusKey']?.toString() == value) {
+        final label = status['label']?.toString() ?? '';
+        if (label.isNotEmpty) return label;
+      }
+    }
+    return switch (value) {
+      'present' => 'Present',
+      'absent' => 'Absent',
+      'late' => 'Late',
+      'excused' => 'Excused',
+      'early_departure' => 'Left early',
+      _ => value,
+    };
   }
 
   Future<String?> _askCorrectionReason() async {
@@ -1994,13 +2339,54 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
   }
 
   String? _localAttendance(String studentId) {
+    for (final row in _attendanceDrafts) {
+      if (row['studentPublicId'] == studentId &&
+          row['date'] == _date &&
+          (row['period'] ?? 0) == _attendancePeriod) {
+        final label = row['statusLabel']?.toString() ?? '';
+        return label.isNotEmpty
+            ? label
+            : _attendanceLabel(row['status']?.toString() ?? '');
+      }
+    }
     for (final row in _attendance) {
       if (row['student_public_id'] == studentId &&
-          row['attendance_date'] == _date) {
-        return row['status']?.toString();
+          row['attendance_date'] == _date &&
+          (row['period'] ?? 0) == _attendancePeriod) {
+        final label = row['status_label']?.toString() ?? '';
+        return label.isNotEmpty ? label : row['status']?.toString();
       }
     }
     return null;
+  }
+
+  String _attendanceDraftKey(String studentId, int period) =>
+      '$studentId:$period';
+
+  List<Map<String, dynamic>> get _attendanceStatusOptions =>
+      _attendanceStatuses.isEmpty
+          ? const [
+            {'statusKey': 'present', 'label': 'Present'},
+            {'statusKey': 'absent', 'label': 'Absent'},
+            {'statusKey': 'late', 'label': 'Late'},
+            {'statusKey': 'excused', 'label': 'Excused'},
+            {'statusKey': 'early_departure', 'label': 'Left early'},
+          ]
+          : _attendanceStatuses;
+
+  Set<String> _queuedAttendanceStudentIds() {
+    final ids = <String>{};
+    for (final row in _queuedAttendance) {
+      try {
+        final payload =
+            jsonDecode(row['payload_json'] as String) as Map<String, dynamic>;
+        final id = payload['studentPublicId']?.toString();
+        if (id != null && id.isNotEmpty) ids.add(id);
+      } catch (_) {
+        // Ignore an unreadable older outbox row and keep the cached attendance visible.
+      }
+    }
+    return ids;
   }
 
   List<String> get _tabs =>
@@ -2010,6 +2396,7 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
             'Classes',
             'Attendance',
             'Work',
+            'Requests',
             'Notices',
           ]
           : const ['Children', 'Learning', 'Fees', 'Notices', 'Requests'];
@@ -2041,7 +2428,13 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
         case 'Attendance':
           return _teacherAttendance();
         case 'Work':
-          return [..._homeworkCards(), ..._teacherMarkCards()];
+          return [
+            ..._teacherScheduleUpdates(),
+            ..._homeworkCards(),
+            ..._teacherMarkCards(),
+          ];
+        case 'Requests':
+          return _teacherLeaveSection();
         case 'Notices':
           return _announcementCards(allowAcknowledge: true);
         default:
@@ -2096,40 +2489,377 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
         .toList();
   }
 
-  List<Widget> _teacherOverview() => [
-    _sectionHeading('Today at school'),
-    if (_sections.isEmpty)
-      const _InfoBanner(
-        text: 'No assigned classes have been synced to this account yet.',
-      ),
-    ..._sections.map(
-      (section) => Card(
-        child: ListTile(
-          leading: const Icon(Icons.groups_outlined),
-          title: Text('${section['class_name']} · ${section['name']}'),
-          subtitle: Text(
-            '${_students.where((s) => s['section_public_id'] == section['public_id']).length} students cached',
+  List<Widget> _teacherOverview() {
+    final today = DateTime.now().weekday;
+    final visibleTimetable = timetableEntriesForView(
+      _timetable,
+      weekly: _showWeeklyTimetable,
+      weekday: today,
+    );
+    final dayName = timetableWeekdayLabel(today);
+
+    return [
+      _sectionHeading('Today at school'),
+      if (_sections.isEmpty)
+        const _InfoBanner(
+          text: 'No assigned classes have been synced to this account yet.',
+        ),
+      ..._sections.map(
+        (section) => Card(
+          child: ListTile(
+            leading: const Icon(Icons.groups_outlined),
+            title: Text('${section['class_name']} · ${section['name']}'),
+            subtitle: Text(
+              '${_students.where((s) => s['section_public_id'] == section['public_id']).length} students cached',
+            ),
           ),
         ),
       ),
+      _sectionHeading(
+        _showWeeklyTimetable ? 'Weekly timetable' : '$dayName timetable',
+      ),
+      SegmentedButton<bool>(
+        segments: const [
+          ButtonSegment<bool>(value: false, label: Text('Today')),
+          ButtonSegment<bool>(value: true, label: Text('Week')),
+        ],
+        selected: {_showWeeklyTimetable},
+        onSelectionChanged:
+            (selection) =>
+                setState(() => _showWeeklyTimetable = selection.first),
+      ),
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Text(
+          timetableSyncLabel(_timetableLastUpdatedAt),
+          style: const TextStyle(fontSize: 12, color: Color(0xff68778b)),
+        ),
+      ),
+      if (_timetable.isEmpty)
+        const _InfoBanner(
+          text: 'No timetable entries are synced to this device yet.',
+        ),
+      if (_timetable.isNotEmpty && visibleTimetable.isEmpty)
+        _InfoBanner(text: 'No classes are scheduled for $dayName.'),
+      ...visibleTimetable.map(
+        (row) => _recordCard(
+          icon: Icons.schedule_outlined,
+          title:
+              '${row['startTime'] ?? ''}–${row['endTime'] ?? ''} · ${row['subjectName'] ?? 'Class'}',
+          subtitle:
+              '${row['className'] ?? ''} · ${row['sectionName'] ?? ''} · ${row['room'] ?? 'Room not set'}',
+          trailing:
+              '${timetableWeekdayLabel(int.tryParse(row['weekday']?.toString() ?? '') ?? 0)} · Period ${row['period'] ?? '—'}',
+          action: SchoolMeetingLinkButton(link: row['meetingLink']),
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _teacherScheduleUpdates() {
+    final calendarEvents = [..._schoolCalendar]..sort(
+      (left, right) => (left['startDate']?.toString() ?? '').compareTo(
+        right['startDate']?.toString() ?? '',
+      ),
+    );
+    final substitutionDuties = [..._teacherSubstitutions]..sort((left, right) {
+      final date = (left['assignmentDate']?.toString() ?? '').compareTo(
+        right['assignmentDate']?.toString() ?? '',
+      );
+      return date != 0
+          ? date
+          : (left['startTime']?.toString() ?? '').compareTo(
+            right['startTime']?.toString() ?? '',
+          );
+    });
+    return [
+      _sectionHeading('School calendar'),
+      if (calendarEvents.isEmpty)
+        const _InfoBanner(
+          text: 'No upcoming school calendar events are synced yet.',
+        ),
+      ...calendarEvents.map((event) {
+        final endDate = event['endDate']?.toString();
+        final dates =
+            endDate == null || endDate.isEmpty
+                ? '${event['startDate'] ?? ''}'
+                : '${event['startDate'] ?? ''} – $endDate';
+        final notes = event['notes']?.toString() ?? '';
+        return _recordCard(
+          icon:
+              event['eventType'] == 'closure'
+                  ? Icons.event_busy_outlined
+                  : event['eventType'] == 'ptm'
+                  ? Icons.groups_outlined
+                  : Icons.event_outlined,
+          title: event['title']?.toString() ?? 'School event',
+          subtitle: [
+            calendarEventTypeLabel(event['eventType']),
+            if (notes.isNotEmpty) notes,
+          ].join(' · '),
+          trailing: dates,
+        );
+      }),
+      _sectionHeading('Substitution duties'),
+      if (substitutionDuties.isEmpty)
+        const _InfoBanner(
+          text:
+              'No substitute duties are assigned. Confirmed schedule changes appear here after sync.',
+        ),
+      ...substitutionDuties.map((duty) {
+        final cancelled = duty['status'] == 'cancelled';
+        final coversSomeoneElse = duty['assignmentRole'] == 'substitute';
+        final teacherLabel =
+            coversSomeoneElse
+                ? duty['originalTeacherName']?.toString()
+                : duty['substituteTeacherName']?.toString();
+        return _recordCard(
+          icon: cancelled ? Icons.event_busy_outlined : Icons.swap_horiz,
+          title:
+              '${coversSomeoneElse ? 'Covering' : 'Your class'} · ${duty['assignmentDate'] ?? ''} · ${duty['startTime'] ?? ''}–${duty['endTime'] ?? ''}',
+          subtitle:
+              '${duty['className'] ?? ''} · ${duty['sectionName'] ?? ''} · ${duty['subjectName'] ?? ''}${teacherLabel?.isNotEmpty == true ? ' · ${coversSomeoneElse ? 'Cover teacher' : 'Scheduled teacher'}: $teacherLabel' : ''}${duty['room']?.toString().isNotEmpty == true ? ' · ${duty['room']}' : ''}${duty['notes']?.toString().isNotEmpty == true ? ' · ${duty['notes']}' : ''}',
+          trailing: cancelled ? 'Cancelled' : 'Assigned',
+        );
+      }),
+    ];
+  }
+
+  List<Widget> _teacherLeaveSection() => [
+    const SizedBox(height: 8),
+    _sectionHeading('Leave requests'),
+    Row(
+      children: [
+        const Expanded(
+          child: Text(
+            'Send a request to the school office and check its decision here.',
+            style: TextStyle(color: Color(0xff68778b), fontSize: 12),
+          ),
+        ),
+        const SizedBox(width: 8),
+        FilledButton.icon(
+          onPressed: _busy ? null : _requestStaffLeave,
+          icon: const Icon(Icons.edit_calendar_outlined),
+          label: const Text('Request leave'),
+        ),
+      ],
     ),
-    _sectionHeading('Timetable'),
-    if (_timetable.isEmpty)
-      const _InfoBanner(text: 'No timetable entries are available offline.'),
-    ..._timetable
-        .take(12)
-        .map(
-          (row) => _recordCard(
-            icon: Icons.schedule_outlined,
-            title:
-                '${row['startTime'] ?? ''}–${row['endTime'] ?? ''} · ${row['subjectName'] ?? 'Class'}',
-            subtitle:
-                '${row['className'] ?? ''} · ${row['sectionName'] ?? ''} · ${row['room'] ?? 'Room not set'}',
-            trailing:
-                'Day ${row['weekday'] ?? '—'} · Period ${row['period'] ?? '—'}',
+    if (_staffLeaveRequests.isEmpty)
+      const Padding(
+        padding: EdgeInsets.only(top: 8, bottom: 4),
+        child: Text(
+          'No leave requests yet. New requests can be saved offline and sent when the Hub is reachable.',
+          style: TextStyle(color: Color(0xff68778b), fontSize: 12),
+        ),
+      ),
+    ..._staffLeaveRequests.map((request) {
+      final status = request['status']?.toString() ?? 'pending';
+      final statusLabel = switch (status) {
+        'queued' => 'Waiting to sync',
+        'pending' => 'Awaiting school decision',
+        'approved' => 'Approved',
+        'rejected' => 'Declined',
+        'needs_info' => 'More information requested',
+        _ => status,
+      };
+      return Card(
+        child: ListTile(
+          leading: Icon(
+            status == 'approved'
+                ? Icons.check_circle_outline
+                : status == 'rejected'
+                ? Icons.cancel_outlined
+                : Icons.hourglass_top,
+          ),
+          title: Text(
+            '${request['startsOn'] ?? ''} – ${request['endsOn'] ?? ''}',
+          ),
+          subtitle: Text(
+            [
+              request['reason']?.toString() ?? '',
+              statusLabel,
+              if (request['resolutionNote']?.toString().isNotEmpty == true)
+                request['resolutionNote'].toString(),
+            ].where((value) => value.isNotEmpty).join(' · '),
           ),
         ),
+      );
+    }),
   ];
+
+  Future<void> _requestStaffLeave() async {
+    final startsOn = TextEditingController();
+    final endsOn = TextEditingController();
+    final reason = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    Future<void> chooseDate(
+      BuildContext dialogContext,
+      StateSetter setDialogState,
+      TextEditingController controller, {
+      DateTime? firstDate,
+    }) async {
+      final today = DateUtils.dateOnly(DateTime.now());
+      final minimum = firstDate ?? DateTime(2000);
+      final existing = DateTime.tryParse(controller.text);
+      final initial =
+          existing != null && !existing.isBefore(minimum)
+              ? existing
+              : (today.isBefore(minimum) ? minimum : today);
+      final selected = await showDatePicker(
+        context: dialogContext,
+        initialDate: initial,
+        firstDate: minimum,
+        lastDate: DateTime(today.year + 3, 12, 31),
+      );
+      if (selected != null) {
+        controller.text = selected.toIso8601String().substring(0, 10);
+        setDialogState(() {});
+      }
+    }
+
+    final request = await showDialog<Map<String, String>>(
+      context: context,
+      builder:
+          (dialogContext) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => AlertDialog(
+                  title: const Text('Request leave'),
+                  content: Form(
+                    key: formKey,
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextFormField(
+                            controller: startsOn,
+                            readOnly: true,
+                            onTap:
+                                () => chooseDate(
+                                  dialogContext,
+                                  setDialogState,
+                                  startsOn,
+                                ),
+                            decoration: InputDecoration(
+                              labelText: 'First day',
+                              hintText: 'Choose date',
+                              suffixIcon: IconButton(
+                                tooltip: 'Choose first day',
+                                onPressed:
+                                    () => chooseDate(
+                                      dialogContext,
+                                      setDialogState,
+                                      startsOn,
+                                    ),
+                                icon: const Icon(Icons.calendar_today_outlined),
+                              ),
+                            ),
+                            validator:
+                                (value) =>
+                                    (value?.isEmpty ?? true)
+                                        ? 'Choose the first day.'
+                                        : validateOptionalIsoDate(
+                                          value,
+                                          label: 'start date',
+                                        ),
+                          ),
+                          TextFormField(
+                            controller: endsOn,
+                            readOnly: true,
+                            onTap:
+                                () => chooseDate(
+                                  dialogContext,
+                                  setDialogState,
+                                  endsOn,
+                                  firstDate:
+                                      DateTime.tryParse(startsOn.text) ??
+                                      DateTime(2000),
+                                ),
+                            decoration: InputDecoration(
+                              labelText: 'Last day',
+                              hintText: 'Choose date',
+                              suffixIcon: IconButton(
+                                tooltip: 'Choose last day',
+                                onPressed:
+                                    () => chooseDate(
+                                      dialogContext,
+                                      setDialogState,
+                                      endsOn,
+                                      firstDate:
+                                          DateTime.tryParse(startsOn.text) ??
+                                          DateTime(2000),
+                                    ),
+                                icon: const Icon(Icons.calendar_today_outlined),
+                              ),
+                            ),
+                            validator: (value) {
+                              if (value?.isEmpty ?? true)
+                                return 'Choose the last day.';
+                              return validateOptionalIsoDate(
+                                    value,
+                                    label: 'end date',
+                                  ) ??
+                                  validateOptionalRequestDateRange(
+                                    startsOn: startsOn.text,
+                                    endsOn: value,
+                                  );
+                            },
+                          ),
+                          TextFormField(
+                            controller: reason,
+                            minLines: 2,
+                            maxLines: 4,
+                            decoration: const InputDecoration(
+                              labelText: 'Reason',
+                            ),
+                            validator:
+                                (value) =>
+                                    (value?.trim().length ?? 0) < 3
+                                        ? 'Enter a reason of at least 3 characters.'
+                                        : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(dialogContext),
+                      child: const Text('Cancel'),
+                    ),
+                    FilledButton(
+                      onPressed: () {
+                        if (formKey.currentState?.validate() != true) return;
+                        Navigator.pop(dialogContext, {
+                          'startsOn': startsOn.text,
+                          'endsOn': endsOn.text,
+                          'reason': reason.text.trim(),
+                        });
+                      },
+                      child: const Text('Save request'),
+                    ),
+                  ],
+                ),
+          ),
+    );
+    startsOn.dispose();
+    endsOn.dispose();
+    reason.dispose();
+    if (request == null) return;
+
+    final id = 'local-${DateTime.now().microsecondsSinceEpoch}';
+    await _store?.saveMobileRecord('staffLeaveRequests', {
+      'id': id,
+      ...request,
+      'status': 'queued',
+      'resolutionNote': '',
+    });
+    await _queueCommand(
+      entityType: 'staff_leave_request',
+      entityId: id,
+      operation: 'staff_leave.submit',
+      payload: request,
+    );
+  }
 
   List<Widget> _teacherClasses() => [
     _sectionHeading('My assigned classes'),
@@ -2141,9 +2871,10 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     ..._sections.map((section) {
       final sectionId = section['public_id']?.toString();
       final selected = sectionId == _selectedSection;
-      final students = _students
-          .where((student) => student['section_public_id'] == sectionId)
-          .toList();
+      final students =
+          _students
+              .where((student) => student['section_public_id'] == sectionId)
+              .toList();
       return Card(
         child: ListTile(
           leading: CircleAvatar(
@@ -2388,6 +3119,7 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
               subtitle:
                   '${row['className'] ?? ''} · ${row['sectionName'] ?? ''}',
               trailing: 'Day ${row['weekday'] ?? '—'}',
+              action: SchoolMeetingLinkButton(link: row['meetingLink']),
             ),
           ),
     ],
@@ -2493,8 +3225,9 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     String? subtitle,
     String? trailing,
     String? detail,
-  }) => Card(
-    child: ListTile(
+    Widget? action,
+  }) {
+    final tile = ListTile(
       leading: Icon(icon),
       title: Text(title),
       subtitle:
@@ -2531,8 +3264,17 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                   ],
                 ),
           ),
-    ),
-  );
+    );
+    return Card(
+      child:
+          action == null
+              ? tile
+              : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [tile, action],
+              ),
+    );
+  }
 
   Widget _queuedCommandCard(Map<String, Object?> row) {
     Map<String, dynamic> payload = {};
@@ -3056,9 +3798,27 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
   }
 
   List<Widget> _teacherAttendance() {
+    final queuedIds = _queuedAttendanceStudentIds();
+    final session = _selectedAttendanceSession;
+    final sessionStatus = session?['status']?.toString();
+    final sessionLocked = sessionStatus == 'submitted';
+    final remainingCount =
+        _students.where((student) {
+          final id = student['public_id']?.toString() ?? '';
+          return _localAttendance(id) == null && !queuedIds.contains(id);
+        }).length;
+    final markedCount =
+        _students
+            .where(
+              (student) =>
+                  _localAttendance(student['public_id']?.toString() ?? '') !=
+                  null,
+            )
+            .length;
+    final queuedCount = queuedIds.length;
     return [
       const Text(
-        'Attendance drafts',
+        'Class attendance',
         style: TextStyle(
           fontSize: 18,
           fontWeight: FontWeight.w700,
@@ -3091,28 +3851,90 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       const SizedBox(height: 8),
       TextField(
         controller: _dateController,
-        keyboardType: TextInputType.datetime,
+        readOnly: true,
         decoration: InputDecoration(
-          labelText: 'Attendance date (YYYY-MM-DD)',
+          labelText: 'Attendance date',
           suffixIcon: IconButton(
-            icon: const Icon(Icons.check),
-            onPressed: () async {
-              final value = _dateController.text.trim();
-              if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) {
-                setState(() => _date = value);
-                await _reloadLocal();
-              }
-            },
+            tooltip: 'Choose date',
+            icon: const Icon(Icons.calendar_month_outlined),
+            onPressed: _pickAttendanceDate,
           ),
         ),
-        onSubmitted: (value) async {
-          if (RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) {
-            setState(() => _date = value);
-            await _reloadLocal();
-          }
+      ),
+      const SizedBox(height: 8),
+      DropdownButtonFormField<int>(
+        initialValue: _attendancePeriod,
+        decoration: const InputDecoration(labelText: 'Attendance session'),
+        items: [
+          const DropdownMenuItem(value: 0, child: Text('Full day')),
+          for (var period = 1; period <= 15; period++)
+            DropdownMenuItem(value: period, child: Text('Period $period')),
+        ],
+        onChanged: (value) async {
+          if (value == null) return;
+          setState(() => _attendancePeriod = value);
+          await _reloadLocal();
         },
       ),
       const SizedBox(height: 8),
+      if (_students.isNotEmpty) ...[
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            Chip(label: Text('$markedCount of ${_students.length} marked')),
+            if (queuedCount > 0)
+              Chip(
+                avatar: const Icon(Icons.cloud_upload_outlined, size: 16),
+                label: Text('$queuedCount waiting for Hub'),
+              ),
+          ],
+        ),
+        if (remainingCount > 0)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _busy ? null : _queueUnmarkedAttendance,
+              icon: const Icon(Icons.done_all),
+              label: Text('Save remaining $remainingCount as present'),
+            ),
+          ),
+        if (sessionStatus == 'submitted')
+          const _InfoBanner(
+            text: 'Attendance was submitted and is waiting for school approval.',
+          ),
+        if (sessionStatus == 'approved')
+          const _InfoBanner(
+            text: 'This attendance session has been approved and shared with parents.',
+          ),
+        if (sessionStatus == 'needs_changes')
+          _InfoBanner(
+            text:
+                'The school returned this attendance for changes: ${session?['reviewNote'] ?? 'Review the marks and submit again.'}',
+          ),
+        if (session?['status'] == 'draft')
+          const _InfoBanner(
+            text: 'Draft marks are saved on the School Hub and are not visible to parents.',
+          ),
+        if (markedCount == _students.length &&
+            sessionStatus != 'submitted' &&
+            sessionStatus != 'approved')
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              onPressed:
+                  _busy || _attendanceSubmissionQueued
+                      ? null
+                      : _submitAttendanceForApproval,
+              icon: const Icon(Icons.send_outlined),
+              label: Text(
+                _attendanceSubmissionQueued
+                    ? 'Submission waiting for Hub'
+                    : 'Submit attendance for approval',
+              ),
+            ),
+          ),
+      ],
       if (_students.isEmpty)
         const _InfoBanner(
           text:
@@ -3121,6 +3943,15 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
       ..._students.map((student) {
         final id = student['public_id']?.toString() ?? '';
         final current = _localAttendance(id);
+        final isQueued = queuedIds.contains(id);
+        final hasDraft = _attendanceDrafts.any(
+          (row) =>
+              row['studentPublicId'] == id &&
+              row['date'] == _date &&
+              (row['period'] ?? 0) == _attendancePeriod,
+        );
+        final draftKey = _attendanceDraftKey(id, _attendancePeriod);
+        final selectedStatus = _draftStatuses[draftKey] ?? 'present';
         return Card(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -3135,34 +3966,58 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                         style: const TextStyle(fontWeight: FontWeight.w700),
                       ),
                       Text(
-                        '${student['admission_no']} · ${current ?? 'Not marked'}',
+                        '${student['admission_no']} · ${current ?? (isQueued ? 'Waiting for Hub' : 'Not marked')}',
                         style: const TextStyle(
                           color: Color(0xff718095),
                           fontSize: 11,
                         ),
                       ),
+                      if (hasDraft)
+                        const Text(
+                          'Draft · not shared with parents',
+                          style: TextStyle(
+                            color: Color(0xff956400),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                     ],
                   ),
                 ),
                 DropdownButton<String>(
-                  value: _draftStatuses[id] ?? 'present',
+                  value:
+                      _attendanceStatusOptions.any(
+                            (option) =>
+                                option['statusKey']?.toString() ==
+                                selectedStatus,
+                          )
+                          ? selectedStatus
+                          : _attendanceStatusOptions.first['statusKey']
+                              ?.toString(),
                   items:
-                      const ['present', 'absent', 'late', 'excused']
+                      _attendanceStatusOptions
                           .map(
-                            (value) => DropdownMenuItem(
-                              value: value,
-                              child: Text(value),
+                            (option) => DropdownMenuItem(
+                              value: option['statusKey']?.toString(),
+                              child: Text(
+                                option['label']?.toString() ??
+                                    _attendanceLabel(
+                                      option['statusKey']?.toString() ?? '',
+                                    ),
+                              ),
                             ),
                           )
                           .toList(),
-                  onChanged: (value) {
+                  onChanged: sessionLocked ? null : (value) {
                     if (value != null)
-                      setState(() => _draftStatuses[id] = value);
+                      setState(() => _draftStatuses[draftKey] = value);
                   },
                 ),
                 IconButton(
-                  tooltip: 'Save on device',
-                  onPressed: () => unawaited(_queueAttendance(student)),
+                  tooltip: 'Save draft on this device',
+                  onPressed: _busy || sessionLocked
+                      ? null
+                      : () => unawaited(_queueAttendance(student)),
                   icon: const Icon(Icons.save_outlined),
                 ),
               ],

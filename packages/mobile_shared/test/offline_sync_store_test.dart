@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as paths;
 import 'package:school_erp_mobile_shared/src/offline_sync_store.dart';
@@ -12,6 +15,227 @@ void main() {
   });
 
   tearDown(() async => OfflineSyncStore.closeForRestart());
+
+  test(
+    'version 3 cache upgrade preserves day marks and normalizes queued attendance period',
+    () async {
+      final schoolId = 'upgrade_${DateTime.now().microsecondsSinceEpoch}';
+      const accountId = 'teacher_upgrade';
+      const studentId = '018f7e5a-72b4-7ca2-9c2d-112233445577';
+      const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      final key = sha256
+          .convert(utf8.encode('$schoolId|$accountId'))
+          .toString()
+          .substring(0, 32);
+      final path = paths.join(
+        await getDatabasesPath(),
+        'school_erp_offline_$key.sqlite',
+      );
+      final legacy = await openDatabase(
+        path,
+        version: 3,
+        onCreate: (db, _) async {
+          await db.execute('''
+            CREATE TABLE cached_attendance (
+              student_public_id TEXT NOT NULL,
+              attendance_date TEXT NOT NULL,
+              status TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              revision INTEGER NOT NULL,
+              updated_at TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (student_public_id,attendance_date)
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE sync_outbox (
+              operation_id TEXT PRIMARY KEY,
+              school_id TEXT NOT NULL,
+              device_id TEXT NOT NULL,
+              user_id INTEGER NOT NULL,
+              entity_type TEXT NOT NULL,
+              entity_id TEXT NOT NULL,
+              operation TEXT NOT NULL,
+              payload_schema_version INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              base_revision INTEGER,
+              payload_json TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('pending','in_progress','accepted','failed','rejected','conflict')),
+              attempts INTEGER NOT NULL DEFAULT 0,
+              next_retry_at TEXT NOT NULL,
+              last_error TEXT NOT NULL DEFAULT ''
+            )
+          ''');
+        },
+      );
+      await legacy.insert('cached_attendance', {
+        'student_public_id': studentId,
+        'attendance_date': '2026-10-20',
+        'status': 'present',
+        'reason': '',
+        'revision': 1,
+        'updated_at': '',
+      });
+      await legacy.insert('sync_outbox', {
+        'operation_id': operationId,
+        'school_id': schoolId,
+        'device_id': 'device_upgrade',
+        'user_id': 7,
+        'entity_type': 'attendance',
+        'entity_id': '$studentId:2026-10-20',
+        'operation': 'upsert',
+        'payload_schema_version': 1,
+        'created_at': '2026-10-20T00:00:00Z',
+        'base_revision': 1,
+        'payload_json': jsonEncode({
+          'studentPublicId': studentId,
+          'date': '2026-10-20',
+          'status': 'absent',
+          'reason': '',
+        }),
+        'status': 'pending',
+        'attempts': 0,
+        'next_retry_at': '',
+        'last_error': '',
+      });
+      await legacy.close();
+
+      final store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: accountId,
+      );
+      expect(
+        (await store.attendance(studentId, '2026-10-20'))?['status'],
+        'present',
+      );
+      final queued = await store.queuedAttendanceDrafts(
+        '2026-10-20',
+        period: 0,
+      );
+      expect(queued.single['operation_id'], operationId);
+      expect(queued.single['entity_id'], '$studentId:2026-10-20:0');
+      expect(queued.single['payload_json'], contains('"period":0'));
+    },
+  );
+
+  test(
+    'attendance queue deduplicates retries within a period, not across periods',
+    () async {
+      final schoolId = 'period_${DateTime.now().microsecondsSinceEpoch}';
+      final store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: 'teacher_periods',
+      );
+      const studentId = '018f7e5a-72b4-7ca2-9c2d-112233445577';
+      const deviceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      final first = await store.queueAttendance(
+        schoolId: schoolId,
+        deviceId: deviceId,
+        userId: 7,
+        studentPublicId: studentId,
+        date: '2026-10-20',
+        status: 'present',
+        baseRevision: null,
+      );
+      final second = await store.queueAttendance(
+        schoolId: schoolId,
+        deviceId: deviceId,
+        userId: 7,
+        studentPublicId: studentId,
+        date: '2026-10-20',
+        period: 2,
+        status: 'absent',
+        baseRevision: null,
+      );
+      final retry = await store.queueAttendance(
+        schoolId: schoolId,
+        deviceId: deviceId,
+        userId: 7,
+        studentPublicId: studentId,
+        date: '2026-10-20',
+        period: 2,
+        status: 'late',
+        baseRevision: null,
+      );
+
+      expect(first, isNot(second));
+      expect(retry, second);
+      final queued = await store.dueAttendanceOperations();
+      expect(queued, hasLength(2));
+      expect(
+        queued.map((row) => row['entity_id']),
+        contains('$studentId:2026-10-20:0'),
+      );
+      expect(
+        queued.map((row) => row['entity_id']),
+        contains('$studentId:2026-10-20:2'),
+      );
+    },
+  );
+
+  test(
+    'cached timetable exposes its most recent successful refresh time',
+    () async {
+      final schoolId = 'schedule_${DateTime.now().microsecondsSinceEpoch}';
+      final store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: 'teacher_schedule',
+      );
+      await store.replaceSnapshot({
+        'schoolId': schoolId,
+        'cursor': 0,
+        'mobileRecords': {
+          'timetable': [
+            {'id': 1, 'weekday': 1, 'period': 1, 'subjectName': 'Science'},
+          ],
+        },
+      });
+
+      expect(
+        DateTime.tryParse(
+          await store.mobileRecordsUpdatedAt('timetable') ?? '',
+        ),
+        isNotNull,
+      );
+      expect(await store.mobileRecordsUpdatedAt('schoolCalendar'), isNull);
+    },
+  );
+
+  test(
+    'repeated unsent attendance edits update one queued operation',
+    () async {
+      final schoolId = 'test_${DateTime.now().microsecondsSinceEpoch}';
+      const studentId = '018f7e5a-72b4-7ca2-9c2d-112233445577';
+      final store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: 'teacher_7',
+      );
+
+      final firstOperationId = await store.queueAttendance(
+        schoolId: schoolId,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        userId: 7,
+        studentPublicId: studentId,
+        date: '2026-10-20',
+        status: 'absent',
+        baseRevision: null,
+      );
+      final secondOperationId = await store.queueAttendance(
+        schoolId: schoolId,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        userId: 7,
+        studentPublicId: studentId,
+        date: '2026-10-20',
+        status: 'present',
+        baseRevision: null,
+      );
+
+      expect(secondOperationId, firstOperationId);
+      final queued = await store.dueAttendanceOperations();
+      expect(queued, hasLength(1));
+      expect(queued.single['operation_id'], firstOperationId);
+      expect(queued.single['payload_json'], contains('"status":"present"'));
+    },
+  );
 
   test(
     'offline attendance stays queued across an app database restart',
@@ -58,6 +282,22 @@ void main() {
         'mobileRecords': {
           'timetable': [
             {'id': 9, 'subjectName': 'Science'},
+          ],
+          'schoolCalendar': [
+            {
+              'id': 12,
+              'title': 'Staff meeting',
+              'startDate': '2026-11-12',
+              'eventType': 'event',
+            },
+          ],
+          'teacherSubstitutions': [
+            {
+              'id': 15,
+              'assignmentDate': '2026-11-13',
+              'subjectName': 'Science',
+              'status': 'assigned',
+            },
           ],
           'examMarks': [
             {
@@ -131,6 +371,14 @@ void main() {
         'Science',
       );
       expect(
+        (await store.mobileRecords('schoolCalendar')).single['title'],
+        'Staff meeting',
+      );
+      expect(
+        (await store.mobileRecords('teacherSubstitutions')).single['status'],
+        'assigned',
+      );
+      expect(
         (await store.queuedCommands()).map((row) => row['operation_id']),
         containsAll([markOperationId, requestOperationId]),
       );
@@ -146,6 +394,122 @@ void main() {
         reason: 'another account on this device must not see the teacher cache',
       );
       expect(await store.mobileRecords('timetable'), isEmpty);
+    },
+  );
+
+  test(
+    'teacher leave requests change from local queued to Hub decision state',
+    () async {
+      final schoolId = 'leave_${DateTime.now().microsecondsSinceEpoch}';
+      var store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: 'teacher_7',
+        userId: 7,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      const acceptedLocalId = 'local-leave-accepted';
+      const rejectedLocalId = 'local-leave-rejected';
+      final acceptedOperation = await store.queueCommand(
+        schoolId: schoolId,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        userId: 7,
+        entityType: 'staff_leave_request',
+        entityId: acceptedLocalId,
+        operation: 'staff_leave.submit',
+        payload: {
+          'startsOn': '2026-11-03',
+          'endsOn': '2026-11-04',
+          'reason': 'Family appointment',
+        },
+      );
+      final rejectedOperation = await store.queueCommand(
+        schoolId: schoolId,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        userId: 7,
+        entityType: 'staff_leave_request',
+        entityId: rejectedLocalId,
+        operation: 'staff_leave.submit',
+        payload: {
+          'startsOn': '2026-12-03',
+          'endsOn': '2026-12-04',
+          'reason': 'Medical appointment',
+        },
+      );
+      await store.saveMobileRecord('staffLeaveRequests', {
+        'id': acceptedLocalId,
+        'startsOn': '2026-11-03',
+        'endsOn': '2026-11-04',
+        'reason': 'Family appointment',
+        'status': 'queued',
+      });
+      await store.saveMobileRecord('staffLeaveRequests', {
+        'id': rejectedLocalId,
+        'startsOn': '2026-12-03',
+        'endsOn': '2026-12-04',
+        'reason': 'Medical appointment',
+        'status': 'queued',
+      });
+
+      expect(
+        await store.queuedCommands(entityType: 'staff_leave_request'),
+        hasLength(2),
+      );
+      await OfflineSyncStore.closeForRestart();
+      store = await OfflineSyncStore.open(
+        schoolId: schoolId,
+        accountId: 'teacher_7',
+        userId: 7,
+        deviceId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      expect(await store.mobileRecords('staffLeaveRequests'), hasLength(2));
+      expect(
+        await store.queuedCommands(entityType: 'staff_leave_request'),
+        hasLength(2),
+      );
+
+      await store.applyCommandResults([
+        {
+          'operationId': acceptedOperation,
+          'status': 'accepted',
+          'record': {
+            'id': 41,
+            'staffId': 7,
+            'startsOn': '2026-11-03',
+            'endsOn': '2026-11-04',
+            'reason': 'Family appointment',
+            'status': 'pending',
+            'resolutionNote': '',
+          },
+        },
+        {
+          'operationId': rejectedOperation,
+          'status': 'rejected',
+          'message': 'This account has no active staff profile.',
+        },
+      ]);
+
+      expect(
+        await store.mobileRecord('staffLeaveRequests', acceptedLocalId),
+        isNull,
+      );
+      expect(
+        (await store.mobileRecord('staffLeaveRequests', '41'))?['status'],
+        'pending',
+      );
+      expect(
+        (await store.mobileRecord(
+          'staffLeaveRequests',
+          rejectedLocalId,
+        ))?['status'],
+        'rejected',
+      );
+      expect(
+        (await store.mobileRecord(
+          'staffLeaveRequests',
+          rejectedLocalId,
+        ))?['resolutionNote'],
+        'This account has no active staff profile.',
+      );
     },
   );
 
