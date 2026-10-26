@@ -1293,15 +1293,20 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
     return MaterialApp(
       title: 'School ERP ${widget.role.title}',
       debugShowCheckedModeBanner: false,
-      theme: _theme,
+      theme: widget.role == MobileRole.teacher ? _teacherTheme : _theme,
       home: Scaffold(
         body: DecoratedBox(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xfff2f6fc), Color(0xffe6edf6)],
-            ),
+          decoration: BoxDecoration(
+            color: widget.role == MobileRole.teacher
+                ? const Color(0xff000000)
+                : null,
+            gradient: widget.role == MobileRole.parent
+                ? const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xfff2f6fc), Color(0xffe6edf6)],
+                  )
+                : null,
           ),
           child: SafeArea(
             child:
@@ -1526,6 +1531,68 @@ final _theme = ThemeData(
   ),
 );
 
+// The Teacher app follows the supplied Mobile V1 dark visual design.
+final _teacherTheme = ThemeData(
+  useMaterial3: true,
+  brightness: Brightness.dark,
+  colorScheme: ColorScheme.fromSeed(
+    seedColor: const Color(0xff7ba7e1),
+    brightness: Brightness.dark,
+    surface: const Color(0xff10151c),
+  ),
+  scaffoldBackgroundColor: Colors.black,
+  cardTheme: CardThemeData(
+    color: const Color(0xff10151c),
+    elevation: 0,
+    margin: const EdgeInsets.only(bottom: 12),
+    shape: RoundedRectangleBorder(
+      side: const BorderSide(color: Color(0xff262e3b)),
+      borderRadius: BorderRadius.circular(18),
+    ),
+  ),
+  inputDecorationTheme: InputDecorationTheme(
+    filled: true,
+    fillColor: Colors.black,
+    border: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: Color(0xff3a4558)),
+    ),
+    enabledBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: Color(0xff3a4558)),
+    ),
+    focusedBorder: OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: const BorderSide(color: Color(0xff7ba7e1), width: 1.5),
+    ),
+    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+  ),
+  filledButtonTheme: FilledButtonThemeData(
+    style: FilledButton.styleFrom(
+      backgroundColor: const Color(0xff7ba7e1),
+      foregroundColor: const Color(0xff0f1620),
+      minimumSize: const Size(0, 46),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      textStyle: const TextStyle(fontWeight: FontWeight.w800),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: OutlinedButton.styleFrom(
+      foregroundColor: const Color(0xff7ba7e1),
+      minimumSize: const Size(0, 46),
+      side: const BorderSide(color: Color(0xff7ba7e1), width: 1.5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+  ),
+  navigationBarTheme: const NavigationBarThemeData(
+    backgroundColor: Color(0xff0a0d12),
+    indicatorColor: Color(0xff22304a),
+    labelTextStyle: WidgetStatePropertyAll(
+      TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+    ),
+  ),
+);
+
 class _Page extends StatelessWidget {
   const _Page({required this.role, required this.child, this.footer});
 
@@ -1536,29 +1603,32 @@ class _Page extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
+    final teacher = role == MobileRole.teacher;
     return Center(
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
+        constraints: BoxConstraints(maxWidth: teacher ? 430 : 520),
         child: SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
-            width > 520 ? 30 : 20,
-            22,
-            width > 520 ? 30 : 20,
-            28,
+            width > 520 ? 30 : (teacher ? 16 : 20),
+            teacher ? 14 : 22,
+            width > 520 ? 30 : (teacher ? 16 : 20),
+            teacher ? 96 : 28,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const _Brand(),
-              const SizedBox(height: 22),
-              Text(
-                '${role.title} app',
-                style: const TextStyle(
-                  color: Color(0xff607086),
-                  fontWeight: FontWeight.w600,
+              if (!teacher) ...[
+                const _Brand(),
+                const SizedBox(height: 22),
+                Text(
+                  '${role.title} app',
+                  style: const TextStyle(
+                    color: Color(0xff607086),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 5),
+                const SizedBox(height: 5),
+              ],
               child,
               if (footer != null) ...[const SizedBox(height: 20), footer!],
             ],
@@ -2535,7 +2605,10 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
         padding: const EdgeInsets.only(top: 4),
         child: Text(
           timetableSyncLabel(_timetableLastUpdatedAt),
-          style: const TextStyle(fontSize: 12, color: Color(0xff68778b)),
+          style: TextStyle(
+            fontSize: 12,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
       if (_timetable.isEmpty)
@@ -3214,10 +3287,10 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
     padding: const EdgeInsets.only(top: 8, bottom: 5),
     child: Text(
       text,
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 18,
         fontWeight: FontWeight.w700,
-        color: Color(0xff122238),
+        color: Theme.of(context).colorScheme.onSurface,
       ),
     ),
   );
@@ -3593,10 +3666,10 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
         children: [
           Text(
             'Hello, ${widget.user['displayName'] ?? widget.role.title}',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 24,
               fontWeight: FontWeight.w700,
-              color: Color(0xff122238),
+              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
           const SizedBox(height: 4),
@@ -3604,7 +3677,9 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
             widget.role == MobileRole.teacher
                 ? 'Your assigned classes and attendance'
                 : 'Your linked students and attendance',
-            style: const TextStyle(color: Color(0xff68778b)),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: 14),
           Card(
@@ -3650,8 +3725,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                   ),
                   Text(
                     '${_counts['pending'] ?? 0} queued · ${_counts['accepted'] ?? 0} accepted · ${_counts['failed'] ?? 0} retryable · ${_counts['conflict'] ?? 0} conflicts · ${_counts['rejected'] ?? 0} rejected',
-                    style: const TextStyle(
-                      color: Color(0xff69788d),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                       fontSize: 12,
                     ),
                   ),
@@ -3668,8 +3743,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
                         _message!,
-                        style: const TextStyle(
-                          color: Color(0xff49627f),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                           fontSize: 12,
                         ),
                       ),
@@ -3721,8 +3796,8 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
               Expanded(
                 child: Text(
                   widget.user['username']?.toString() ?? '',
-                  style: const TextStyle(
-                    color: Color(0xff6c7a8e),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                     fontSize: 12,
                   ),
                 ),
@@ -3820,12 +3895,12 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
             .length;
     final queuedCount = queuedIds.length;
     return [
-      const Text(
+      Text(
         'Class attendance',
         style: TextStyle(
           fontSize: 18,
           fontWeight: FontWeight.w700,
-          color: Color(0xff122238),
+          color: Theme.of(context).colorScheme.onSurface,
         ),
       ),
       const SizedBox(height: 8),
@@ -3973,16 +4048,19 @@ class _HubWorkspaceState extends State<_HubWorkspace> {
                       ),
                       Text(
                         '${student['admission_no']} · ${current ?? (isQueued ? 'Waiting for Hub' : 'Not marked')}',
-                        style: const TextStyle(
-                          color: Color(0xff718095),
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                           fontSize: 11,
                         ),
                       ),
                       if (hasDraft)
-                        const Text(
+                        Text(
                           'Draft · not shared with parents',
                           style: TextStyle(
-                            color: Color(0xff956400),
+                            color:
+                                Theme.of(context).brightness == Brightness.dark
+                                    ? const Color(0xfff2b24a)
+                                    : const Color(0xff956400),
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
                           ),
@@ -5268,17 +5346,20 @@ class _CardBody extends StatelessWidget {
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontWeight: FontWeight.w700,
               fontSize: 21,
               height: 1.2,
-              color: Color(0xff122238),
+              color: Theme.of(context).colorScheme.onSurface,
             ),
           ),
           const SizedBox(height: 7),
           Text(
             subtitle,
-            style: const TextStyle(color: Color(0xff68778b), height: 1.4),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+              height: 1.4,
+            ),
           ),
           const SizedBox(height: 16),
           if (error != null) ...[
@@ -5359,19 +5440,23 @@ class _InfoBanner extends StatelessWidget {
   final String text;
 
   @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: const Color(0xffeef4ff),
-      borderRadius: BorderRadius.circular(12),
-    ),
-    child: Text(
-      text,
-      style: const TextStyle(
-        color: Color(0xff315783),
-        height: 1.45,
-        fontSize: 12.5,
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xff10151c) : const Color(0xffeef4ff),
+        border: dark ? Border.all(color: const Color(0xff262e3b)) : null,
+        borderRadius: BorderRadius.circular(12),
       ),
-    ),
-  );
+      child: Text(
+        text,
+        style: TextStyle(
+          color: dark ? const Color(0xffc3cbd8) : const Color(0xff315783),
+          height: 1.45,
+          fontSize: 12.5,
+        ),
+      ),
+    );
+  }
 }
