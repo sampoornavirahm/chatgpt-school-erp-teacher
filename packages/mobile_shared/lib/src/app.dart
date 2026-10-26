@@ -1297,16 +1297,18 @@ class _SchoolErpMobileState extends State<SchoolErpMobile>
       home: Scaffold(
         body: DecoratedBox(
           decoration: BoxDecoration(
-            color: widget.role == MobileRole.teacher
-                ? const Color(0xff000000)
-                : null,
-            gradient: widget.role == MobileRole.parent
-                ? const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xfff2f6fc), Color(0xffe6edf6)],
-                  )
-                : null,
+            color:
+                widget.role == MobileRole.teacher
+                    ? const Color(0xff000000)
+                    : null,
+            gradient:
+                widget.role == MobileRole.parent
+                    ? const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [Color(0xfff2f6fc), Color(0xffe6edf6)],
+                    )
+                    : null,
           ),
           child: SafeArea(
             child:
